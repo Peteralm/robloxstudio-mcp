@@ -25,6 +25,19 @@ import {
   stopWineStudio,
   toWineWindowsPath,
 } from './studio-wine.js';
+import {
+  STUDIO_EXECUTABLE_NAME,
+  describeStudioInstallationRoots,
+  discoverStudioInstallations,
+  parseStudioInstallationSource,
+  parseStudioSearchRoots,
+  selectStudioInstallation,
+  studioInstallationRoots,
+  type StudioInstallation,
+  type StudioInstallationRoot,
+  type StudioInstallationSearchPaths,
+  type StudioInstallationSource,
+} from './studio-installations.js';
 
 export type StudioLaunchSource = 'baseplate' | 'local_file' | 'published_place' | 'place_revision';
 
@@ -301,11 +314,11 @@ async function powershellAsync(script: string, timeoutMs = 15000): Promise<strin
   });
 }
 
-function windowsLocalAppData(): string | undefined {
-  if (process.platform === 'win32') return process.env.LOCALAPPDATA;
+function windowsEnvironmentDirectory(variable: 'LOCALAPPDATA' | 'APPDATA'): string | undefined {
+  if (process.platform === 'win32') return process.env[variable];
   if (!isWsl()) return undefined;
   try {
-    return run('cmd.exe', ['/c', 'echo %LOCALAPPDATA%'], {
+    return run('cmd.exe', ['/c', `echo %${variable}%`], {
       cwd: existsSync('/mnt/c/Windows') ? '/mnt/c/Windows' : process.cwd(),
     });
   } catch {
@@ -313,11 +326,13 @@ function windowsLocalAppData(): string | undefined {
   }
 }
 
-async function windowsLocalAppDataAsync(): Promise<string | undefined> {
-  if (process.platform === 'win32') return process.env.LOCALAPPDATA;
+async function windowsEnvironmentDirectoryAsync(
+  variable: 'LOCALAPPDATA' | 'APPDATA',
+): Promise<string | undefined> {
+  if (process.platform === 'win32') return process.env[variable];
   if (!isWsl()) return undefined;
   try {
-    return await runAsync('cmd.exe', ['/c', 'echo %LOCALAPPDATA%'], {
+    return await runAsync('cmd.exe', ['/c', `echo %${variable}%`], {
       cwd: existsSync('/mnt/c/Windows') ? '/mnt/c/Windows' : process.cwd(),
     });
   } catch {
@@ -877,7 +892,7 @@ let studioLogsRoot: Promise<string | undefined> | undefined;
 // must finish before Studio is terminated.
 async function settleWindowsStudioSignIn(startedAt: string): Promise<void> {
   studioLogsRoot ??= (async () => {
-    const localAppData = await windowsLocalAppDataAsync();
+    const localAppData = await windowsEnvironmentDirectoryAsync('LOCALAPPDATA');
     return localAppData ? path.join(await toWslPathAsync(localAppData), 'Roblox', 'logs') : undefined;
   })();
   const logsRoot = await studioLogsRoot;
@@ -1271,24 +1286,9 @@ function prepareStudioLaunchOptions(options: StudioLaunchOptions): StudioLaunchO
   };
 }
 
-function resolveStudioExeFromVersions(root: string): string {
-  if (!existsSync(root)) {
-    throw new Error(`Roblox Studio Versions folder not found: ${root}. Set ROBLOX_STUDIO_EXE.`);
-  }
-
-  const candidates = readdirSync(root)
-    .filter((name) => name.startsWith('version-'))
-    .map((name) => path.join(root, name, 'RobloxStudioBeta.exe'))
-    .filter((candidate) => existsSync(candidate))
-    .sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs);
-
-  if (candidates.length === 0) {
-    throw new Error(`RobloxStudioBeta.exe not found under ${root}. Set ROBLOX_STUDIO_EXE.`);
-  }
-
-  // Reject the newest installation rather than falling back: launching an older
-  // version can start the same interrupted update again.
-  const exe = candidates[0];
+// Reject the selected installation rather than falling back: launching an older
+// version can start the same interrupted update again.
+function assertStudioInstallationComplete(exe: string): string {
   const installationDir = path.dirname(exe);
   const hasIncompleteDownload = readdirSync(installationDir).some((name) => /\.crdownload$/i.test(name));
   const settings = statSync(path.join(installationDir, 'AppSettings.xml'), { throwIfNoEntry: false });
@@ -1317,41 +1317,132 @@ function resolveNativeLinuxStudioExe(): string {
   return exe;
 }
 
+const MACOS_STUDIO_EXECUTABLE = '/Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio';
+
+export interface StudioInstallationDiscovery {
+  /** Every Studio found, best candidate first. */
+  installations: StudioInstallation[];
+  /** Roots that were searched, whether or not they exist. */
+  roots: StudioInstallationRoot[];
+  /** ROBLOX_STUDIO_SOURCE filter in effect, if any. */
+  preferredSource?: StudioInstallationSource;
+  /** Installation auto-discovery would launch. */
+  selected?: StudioInstallation;
+  /** ROBLOX_STUDIO_EXE, which wins over discovery. */
+  executableOverride?: string;
+}
+
+function assertStudioDiscoverySupported(): void {
+  if (process.platform !== 'win32' && !isWsl()) {
+    throw new Error('Roblox Studio executable auto-discovery is only supported on Windows, WSL, and macOS. Set ROBLOX_STUDIO_EXE.');
+  }
+}
+
+function studioSearchPathsFrom(
+  localAppData: string | undefined,
+  roamingAppData: string | undefined,
+  toHostPath: (windowsPath: string) => string,
+): StudioInstallationSearchPaths {
+  return {
+    localAppData: localAppData ? toHostPath(localAppData) : path.join(os.homedir(), 'AppData', 'Local'),
+    roamingAppData: roamingAppData ? toHostPath(roamingAppData) : path.join(os.homedir(), 'AppData', 'Roaming'),
+    extraRoots: parseStudioSearchRoots(process.env.ROBLOX_STUDIO_SEARCH_ROOTS),
+  };
+}
+
+function describeStudioInstallationsFor(searchPaths: StudioInstallationSearchPaths): StudioInstallationDiscovery {
+  const preferredSource = parseStudioInstallationSource(process.env.ROBLOX_STUDIO_SOURCE);
+  const installations = discoverStudioInstallations(searchPaths);
+  return {
+    installations,
+    roots: studioInstallationRoots(searchPaths),
+    preferredSource,
+    selected: selectStudioInstallation(installations, preferredSource),
+    executableOverride: process.env.ROBLOX_STUDIO_EXE || undefined,
+  };
+}
+
+/**
+ * Studio installs the server can see, for diagnosing which build a launch
+ * would use. Official Roblox and third-party launcher trees are both reported.
+ */
+export function describeStudioInstallations(): StudioInstallationDiscovery {
+  if (process.platform === 'darwin') {
+    return {
+      installations: [],
+      roots: [],
+      selected: existsSync(MACOS_STUDIO_EXECUTABLE)
+        ? {
+          executable: MACOS_STUDIO_EXECUTABLE,
+          source: 'official',
+          root: path.dirname(MACOS_STUDIO_EXECUTABLE),
+          modifiedAtMs: statSync(MACOS_STUDIO_EXECUTABLE).mtimeMs,
+          launcherDefault: false,
+        }
+        : undefined,
+      executableOverride: process.env.ROBLOX_STUDIO_EXE || undefined,
+    };
+  }
+
+  assertStudioDiscoverySupported();
+  return describeStudioInstallationsFor(
+    studioSearchPathsFrom(
+      windowsEnvironmentDirectory('LOCALAPPDATA'),
+      windowsEnvironmentDirectory('APPDATA'),
+      toWslPath,
+    ),
+  );
+}
+
+function studioDiscoveryFailure(discovery: StudioInstallationDiscovery): Error {
+  const searched = describeStudioInstallationRoots(discovery.roots);
+  if (discovery.preferredSource && discovery.installations.length > 0) {
+    return new Error(
+      `No ${STUDIO_EXECUTABLE_NAME} found for ROBLOX_STUDIO_SOURCE=${discovery.preferredSource}. ` +
+      `Discovered sources: ${[...new Set(discovery.installations.map((i) => i.source))].join(', ')}. ` +
+      'Set ROBLOX_STUDIO_EXE or change ROBLOX_STUDIO_SOURCE.',
+    );
+  }
+  return new Error(
+    `${STUDIO_EXECUTABLE_NAME} not found. Searched: ${searched || '(no known install roots)'}. ` +
+    'Set ROBLOX_STUDIO_EXE, or add the launcher directory to ROBLOX_STUDIO_SEARCH_ROOTS.',
+  );
+}
+
 export function resolveStudioExe(): string {
   if (process.platform === 'linux' && isWineHost()) return resolveNativeLinuxStudioExe();
   if (process.env.ROBLOX_STUDIO_EXE) return process.env.ROBLOX_STUDIO_EXE;
 
   if (process.platform === 'darwin') {
-    return '/Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio';
+    return MACOS_STUDIO_EXECUTABLE;
   }
 
-  if (process.platform !== 'win32' && !isWsl()) {
-    throw new Error('Roblox Studio executable auto-discovery is only supported on Windows, WSL, and macOS. Set ROBLOX_STUDIO_EXE.');
-  }
-
-  const localAppData = windowsLocalAppData();
-  const root = localAppData
-    ? path.join(toWslPath(localAppData), 'Roblox', 'Versions')
-    : path.join(os.homedir(), 'AppData', 'Local', 'Roblox', 'Versions');
-
-  return resolveStudioExeFromVersions(root);
+  const discovery = describeStudioInstallations();
+  if (!discovery.selected) throw studioDiscoveryFailure(discovery);
+  return assertStudioInstallationComplete(discovery.selected.executable);
 }
 
 async function resolveStudioExeAsync(): Promise<string> {
   if (process.platform === 'linux' && isWineHost()) return resolveNativeLinuxStudioExe();
   if (process.env.ROBLOX_STUDIO_EXE) return process.env.ROBLOX_STUDIO_EXE;
   if (process.platform === 'darwin') {
-    return '/Applications/RobloxStudio.app/Contents/MacOS/RobloxStudio';
+    return MACOS_STUDIO_EXECUTABLE;
   }
-  if (process.platform !== 'win32' && !isWsl()) {
-    throw new Error('Roblox Studio executable auto-discovery is only supported on Windows, WSL, and macOS. Set ROBLOX_STUDIO_EXE.');
-  }
+  assertStudioDiscoverySupported();
 
-  const localAppData = await windowsLocalAppDataAsync();
-  const root = localAppData
-    ? path.join(await toWslPathAsync(localAppData), 'Roblox', 'Versions')
-    : path.join(os.homedir(), 'AppData', 'Local', 'Roblox', 'Versions');
-  return resolveStudioExeFromVersions(root);
+  const [localAppData, roamingAppData] = await Promise.all([
+    windowsEnvironmentDirectoryAsync('LOCALAPPDATA'),
+    windowsEnvironmentDirectoryAsync('APPDATA'),
+  ]);
+  const searchPaths = studioSearchPathsFrom(
+    localAppData ? await toWslPathAsync(localAppData) : undefined,
+    roamingAppData ? await toWslPathAsync(roamingAppData) : undefined,
+    (hostPath) => hostPath,
+  );
+
+  const discovery = describeStudioInstallationsFor(searchPaths);
+  if (!discovery.selected) throw studioDiscoveryFailure(discovery);
+  return assertStudioInstallationComplete(discovery.selected.executable);
 }
 
 const WINDOWS_STUDIO_PROCESS_QUERY = [

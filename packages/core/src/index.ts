@@ -57,3 +57,26 @@ export type {
 } from './opencloud-client.js';
 export { createPluginInstaller } from './plugin-installer.js';
 export type { PluginInstallOptions } from './plugin-installer.js';
+export {
+  describeStudioInstallations,
+  resolveStudioExe,
+} from './studio-instance-manager.js';
+export type { StudioInstallationDiscovery } from './studio-instance-manager.js';
+export {
+  RML_LAUNCHER_DIRECTORY,
+  STUDIO_EXECUTABLE_NAME,
+  discoverStudioInstallations,
+  parseStudioInstallationSource,
+  parseStudioSearchRoots,
+  readRmlDefaultInstallation,
+  selectStudioInstallation,
+  studioInstallationRoots,
+} from './studio-installations.js';
+export type {
+  RmlDefaultInstallation,
+  StudioInstallation,
+  StudioInstallationFs,
+  StudioInstallationRoot,
+  StudioInstallationSearchPaths,
+  StudioInstallationSource,
+} from './studio-installations.js';
