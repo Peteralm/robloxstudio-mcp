@@ -85,16 +85,18 @@ export function parseStudioInstallationSource(value: string | undefined): Studio
 }
 
 export interface RmlDefaultInstallation {
-  /** RML `InstallationSource` slug, e.g. `managed` or `roblox-official`. */
-  slug: string;
+  /** RML `InstallationSource` slug, e.g. `managed` or `roblox-official`. Absent when the setting names only a version. */
+  slug?: string;
   versionFolder: string;
 }
 
 /**
- * `{ "defaultInstallationId": "<source>:<version-folder>" }` in the Roblox Mod
- * Loader launcher's Studio settings names the build it opens. The slug matters:
- * `managed` installs live in the launcher's own tree, `roblox-official` ones in
- * the official Roblox tree.
+ * The Roblox Mod Loader launcher's Studio settings name the build it opens:
+ * `{ "defaultVersionGuid": "version-..." }` in current launcher builds, and
+ * `{ "defaultInstallationId": "<source>:version-..." }` in older ones. The slug
+ * matters: `managed` installs live in the launcher's own tree,
+ * `roblox-official` ones in the official Roblox tree. A bare guid carries no
+ * slug and is resolved against the trees on disk.
  */
 export function readRmlDefaultInstallation(
   studioDirectory: string,
@@ -108,14 +110,25 @@ export function readRmlDefaultInstallation(
   } catch {
     return undefined;
   }
-  if (!parsed || typeof parsed !== 'object' || !('defaultInstallationId' in parsed)) return undefined;
-  const id = parsed.defaultInstallationId;
-  if (typeof id !== 'string') return undefined;
-  const separator = id.lastIndexOf(':');
-  const slug = separator === -1 ? 'managed' : id.slice(0, separator);
-  const versionFolder = separator === -1 ? id : id.slice(separator + 1);
-  if (!VERSION_FOLDER.test(versionFolder)) return undefined;
-  return { slug, versionFolder };
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const settings = parsed as { defaultInstallationId?: unknown; defaultVersionGuid?: unknown };
+
+  if (typeof settings.defaultInstallationId === 'string') {
+    const id = settings.defaultInstallationId;
+    const separator = id.lastIndexOf(':');
+    const slug = separator === -1 ? 'managed' : id.slice(0, separator);
+    const versionFolder = separator === -1 ? id : id.slice(separator + 1);
+    if (!VERSION_FOLDER.test(versionFolder)) return undefined;
+    return { slug, versionFolder };
+  }
+
+  if (typeof settings.defaultVersionGuid === 'string') {
+    const versionFolder = settings.defaultVersionGuid;
+    if (!VERSION_FOLDER.test(versionFolder)) return undefined;
+    return { versionFolder };
+  }
+
+  return undefined;
 }
 
 export function studioInstallationRoots(
@@ -126,8 +139,19 @@ export function studioInstallationRoots(
   const rmlStudioDirectory = paths.roamingAppData
     ? path.join(paths.roamingAppData, RML_LAUNCHER_DIRECTORY, 'studio')
     : undefined;
+  const rmlVersionsRoot = rmlStudioDirectory ? path.join(rmlStudioDirectory, 'versions') : undefined;
   const rmlDefault = rmlStudioDirectory
     ? readRmlDefaultInstallation(rmlStudioDirectory, fileSystem)
+    : undefined;
+  // A bare `defaultVersionGuid` does not say which tree holds the build. The
+  // launcher's own copy wins when it exists, because that is what the launcher
+  // opens; otherwise the setting can only mean the official build.
+  const rmlDefaultSlug = rmlDefault
+    ? (rmlDefault.slug
+      ?? (rmlVersionsRoot
+        && fileSystem.existsSync(path.join(rmlVersionsRoot, rmlDefault.versionFolder, STUDIO_EXECUTABLE_NAME))
+        ? 'managed'
+        : 'roblox-official'))
     : undefined;
 
   for (const extra of paths.extraRoots ?? []) {
@@ -139,15 +163,15 @@ export function studioInstallationRoots(
     roots.push({
       path: path.join(paths.localAppData, 'Roblox', 'Versions'),
       source: 'official',
-      defaultVersionFolder: rmlDefault?.slug === 'roblox-official' ? rmlDefault.versionFolder : undefined,
+      defaultVersionFolder: rmlDefaultSlug === 'roblox-official' ? rmlDefault?.versionFolder : undefined,
     });
   }
 
-  if (rmlStudioDirectory) {
+  if (rmlVersionsRoot) {
     roots.push({
-      path: path.join(rmlStudioDirectory, 'versions'),
+      path: rmlVersionsRoot,
       source: 'rml',
-      defaultVersionFolder: rmlDefault?.slug === 'managed' ? rmlDefault.versionFolder : undefined,
+      defaultVersionFolder: rmlDefaultSlug === 'managed' ? rmlDefault?.versionFolder : undefined,
     });
   }
 
