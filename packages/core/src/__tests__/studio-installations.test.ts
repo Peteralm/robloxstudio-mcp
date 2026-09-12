@@ -145,6 +145,51 @@ describe('studio installation discovery', () => {
     });
   });
 
+  test('a bare defaultVersionGuid selects the launcher copy of that version, not the newer official one', () => {
+    const fs = fakeFs({
+      files: {
+        [studioExe(OFFICIAL_ROOT, 'version-ccc')]: 9_000,
+        [studioExe(RML_ROOT, 'version-ccc')]: 1_000,
+        [studioExe(RML_ROOT, 'version-ddd')]: 5_000,
+      },
+      texts: {
+        [path.join(RML_STUDIO, 'settings.json')]: '{"defaultVersionGuid":"version-ccc"}',
+      },
+    });
+
+    const selected = selectStudioInstallation(
+      discoverStudioInstallations({ localAppData: LOCAL_APP_DATA, roamingAppData: ROAMING_APP_DATA }, fs),
+    );
+
+    expect(selected).toMatchObject({
+      executable: studioExe(RML_ROOT, 'version-ccc'),
+      source: 'rml',
+      launcherDefault: true,
+    });
+  });
+
+  test('a bare defaultVersionGuid absent from the launcher tree falls back to the official build', () => {
+    const fs = fakeFs({
+      files: {
+        [studioExe(OFFICIAL_ROOT, 'version-aaa')]: 1_000,
+        [studioExe(RML_ROOT, 'version-ccc')]: 9_000,
+      },
+      texts: {
+        [path.join(RML_STUDIO, 'settings.json')]: '{"defaultVersionGuid":"version-aaa"}',
+      },
+    });
+
+    const selected = selectStudioInstallation(
+      discoverStudioInstallations({ localAppData: LOCAL_APP_DATA, roamingAppData: ROAMING_APP_DATA }, fs),
+    );
+
+    expect(selected).toMatchObject({
+      executable: studioExe(OFFICIAL_ROOT, 'version-aaa'),
+      source: 'official',
+      launcherDefault: true,
+    });
+  });
+
   test('a source preference restores single-tree selection', () => {
     const fs = fakeFs({
       files: {
