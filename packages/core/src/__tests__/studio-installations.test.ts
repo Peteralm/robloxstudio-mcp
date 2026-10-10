@@ -123,6 +123,71 @@ describe('studio installation discovery', () => {
     expect(selected?.launcherDefault).toBe(true);
   });
 
+  test('a default naming a build number selects the folder whose manifest holds that build', () => {
+    const fs = fakeFs({
+      files: {
+        [studioExe(OFFICIAL_ROOT, 'version-9b55')]: 9_000,
+        [studioExe(RML_ROOT, 'version-9b55')]: 9_000,
+        [studioExe(RML_ROOT, 'version-5580')]: 1_000,
+      },
+      texts: {
+        [path.join(RML_STUDIO, 'settings.json')]: '{"defaultInstallationId":"managed:0.742.0.7421053"}',
+        [path.join(RML_ROOT, 'version-9b55', 'rml-studio.json')]: '{"version":"0.742.0.7421053"}',
+        [path.join(RML_ROOT, 'version-5580', 'rml-studio.json')]: '{"version":"0.739.0.7390687"}',
+      },
+    });
+
+    const selected = selectStudioInstallation(
+      discoverStudioInstallations({ localAppData: LOCAL_APP_DATA, roamingAppData: ROAMING_APP_DATA }, fs),
+    );
+
+    expect(selected).toMatchObject({
+      executable: studioExe(RML_ROOT, 'version-9b55'),
+      source: 'rml',
+      launcherDefault: true,
+    });
+  });
+
+  test('a launcher folder named after its build number is discovered and can be the default', () => {
+    const fs = fakeFs({
+      files: {
+        [studioExe(OFFICIAL_ROOT, 'version-aaa')]: 9_000,
+        [studioExe(RML_ROOT, '0.743.0.7430001')]: 1_000,
+      },
+      texts: {
+        [path.join(RML_STUDIO, 'settings.json')]: '{"defaultInstallationId":"managed:0.743.0.7430001"}',
+        [path.join(RML_ROOT, '0.743.0.7430001', 'rml-studio.json')]: '{"version":"0.743.0.7430001"}',
+      },
+    });
+
+    const selected = selectStudioInstallation(
+      discoverStudioInstallations({ localAppData: LOCAL_APP_DATA, roamingAppData: ROAMING_APP_DATA }, fs),
+    );
+
+    expect(selected?.executable).toBe(studioExe(RML_ROOT, '0.743.0.7430001'));
+    expect(selected?.launcherDefault).toBe(true);
+  });
+
+  test('a default naming a build no folder holds falls back to the newest build', () => {
+    const fs = fakeFs({
+      files: {
+        [studioExe(OFFICIAL_ROOT, 'version-aaa')]: 9_000,
+        [studioExe(RML_ROOT, 'version-ccc')]: 1_000,
+      },
+      texts: {
+        [path.join(RML_STUDIO, 'settings.json')]: '{"defaultInstallationId":"managed:0.742.0.7421053"}',
+        [path.join(RML_ROOT, 'version-ccc', 'rml-studio.json')]: '{"version":"0.739.0.7390687"}',
+      },
+    });
+
+    const selected = selectStudioInstallation(
+      discoverStudioInstallations({ localAppData: LOCAL_APP_DATA, roamingAppData: ROAMING_APP_DATA }, fs),
+    );
+
+    expect(selected?.executable).toBe(studioExe(OFFICIAL_ROOT, 'version-aaa'));
+    expect(selected?.launcherDefault).toBe(false);
+  });
+
   test('a launcher default pointing at the official tree selects the official build', () => {
     const fs = fakeFs({
       files: {

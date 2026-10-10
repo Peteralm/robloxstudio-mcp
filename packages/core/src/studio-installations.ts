@@ -57,6 +57,12 @@ export const RML_LAUNCHER_DIRECTORY = 'com.revolution.rml-launcher';
 
 const VERSION_FOLDER = /^version-[a-z0-9]+$/i;
 
+/** Studio build number, e.g. `0.742.0.7421053`. */
+const STUDIO_VERSION = /^\d+(\.\d+){3}$/;
+
+/** Manifest the launcher writes into each Studio folder it manages. */
+const RML_STUDIO_MANIFEST = 'rml-studio.json';
+
 const DEFAULT_FS: StudioInstallationFs = {
   existsSync,
   readdirSync: (target) => readdirSync(target),
@@ -87,14 +93,20 @@ export function parseStudioInstallationSource(value: string | undefined): Studio
 export interface RmlDefaultInstallation {
   /** RML `InstallationSource` slug, e.g. `managed` or `roblox-official`. Absent when the setting names only a version. */
   slug?: string;
-  versionFolder: string;
+  /** Folder name, when the setting names one. */
+  versionFolder?: string;
+  /** Studio build number, when the setting names the build instead of its folder. */
+  version?: string;
 }
 
 /**
- * The Roblox Mod Loader launcher's Studio settings name the build it opens:
- * `{ "defaultVersionGuid": "version-..." }` in current launcher builds, and
- * `{ "defaultInstallationId": "<source>:version-..." }` in older ones. The slug
- * matters: `managed` installs live in the launcher's own tree,
+ * The Roblox Mod Loader launcher's Studio settings name the build it opens, in
+ * one of three shapes depending on the launcher build:
+ * `{ "defaultVersionGuid": "version-..." }`,
+ * `{ "defaultInstallationId": "<source>:version-..." }`, and
+ * `{ "defaultInstallationId": "managed:0.742.0.7421053" }`, which names the
+ * build number and leaves the folder to that build's `rml-studio.json`. The
+ * slug matters: `managed` installs live in the launcher's own tree,
  * `roblox-official` ones in the official Roblox tree. A bare guid carries no
  * slug and is resolved against the trees on disk.
  */
@@ -117,9 +129,10 @@ export function readRmlDefaultInstallation(
     const id = settings.defaultInstallationId;
     const separator = id.lastIndexOf(':');
     const slug = separator === -1 ? 'managed' : id.slice(0, separator);
-    const versionFolder = separator === -1 ? id : id.slice(separator + 1);
-    if (!VERSION_FOLDER.test(versionFolder)) return undefined;
-    return { slug, versionFolder };
+    const key = separator === -1 ? id : id.slice(separator + 1);
+    if (VERSION_FOLDER.test(key)) return { slug, versionFolder: key };
+    if (STUDIO_VERSION.test(key)) return { slug, version: key };
+    return undefined;
   }
 
   if (typeof settings.defaultVersionGuid === 'string') {
@@ -128,6 +141,35 @@ export function readRmlDefaultInstallation(
     return { versionFolder };
   }
 
+  return undefined;
+}
+
+/**
+ * The folder of the managed build with this number. The launcher names new
+ * folders after the build and keeps older `version-<hash>` ones, so the
+ * manifest inside the folder is the only thing that holds for both.
+ */
+function findRmlVersionFolder(
+  versionsRoot: string,
+  version: string,
+  fileSystem: StudioInstallationFs,
+): string | undefined {
+  let entries: string[];
+  try {
+    entries = fileSystem.readdirSync(versionsRoot);
+  } catch {
+    return undefined;
+  }
+  for (const entry of entries) {
+    const manifestPath = path.join(versionsRoot, entry, RML_STUDIO_MANIFEST);
+    if (!fileSystem.existsSync(manifestPath)) continue;
+    try {
+      const manifest = JSON.parse(fileSystem.readFileSync(manifestPath, 'utf8')) as { version?: unknown };
+      if (manifest.version === version) return entry;
+    } catch {
+      continue;
+    }
+  }
   return undefined;
 }
 
@@ -140,8 +182,15 @@ export function studioInstallationRoots(
     ? path.join(paths.roamingAppData, RML_LAUNCHER_DIRECTORY, 'studio')
     : undefined;
   const rmlVersionsRoot = rmlStudioDirectory ? path.join(rmlStudioDirectory, 'versions') : undefined;
-  const rmlDefault = rmlStudioDirectory
+  const rmlSetting = rmlStudioDirectory
     ? readRmlDefaultInstallation(rmlStudioDirectory, fileSystem)
+    : undefined;
+  const rmlDefaultFolder = rmlSetting?.versionFolder
+    ?? (rmlSetting?.version && rmlVersionsRoot
+      ? findRmlVersionFolder(rmlVersionsRoot, rmlSetting.version, fileSystem)
+      : undefined);
+  const rmlDefault = rmlSetting && rmlDefaultFolder
+    ? { slug: rmlSetting.slug, versionFolder: rmlDefaultFolder }
     : undefined;
   // A bare `defaultVersionGuid` does not say which tree holds the build. The
   // launcher's own copy wins when it exists, because that is what the launcher
@@ -191,7 +240,10 @@ export function discoverStudioInstallations(
     let entries: string[] = [''];
     if (!root.flat) {
       try {
-        entries = fileSystem.readdirSync(root.path).filter((name) => VERSION_FOLDER.test(name));
+        // The launcher names its newer folders after the build number.
+        entries = fileSystem.readdirSync(root.path).filter(
+          (name) => VERSION_FOLDER.test(name) || (root.source === 'rml' && STUDIO_VERSION.test(name)),
+        );
       } catch {
         continue;
       }
