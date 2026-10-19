@@ -55,7 +55,7 @@ export const STUDIO_EXECUTABLE_NAME = 'RobloxStudioBeta.exe';
 /** Roblox Mod Loader launcher data directory, under `%APPDATA%`. */
 export const RML_LAUNCHER_DIRECTORY = 'com.revolution.rml-launcher';
 
-const VERSION_FOLDER = /^version-[a-z0-9]+$/i;
+const VERSION_FOLDER = /^version-[a-z0-9-]+$/i;
 
 /** Studio build number, e.g. `0.742.0.7421053`. */
 const STUDIO_VERSION = /^\d+(\.\d+){3}$/;

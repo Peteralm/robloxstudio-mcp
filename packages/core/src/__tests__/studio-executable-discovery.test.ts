@@ -34,6 +34,7 @@ type InstallationState = 'complete' | 'download' | 'missing-settings' | 'empty-s
 describe.each(['windows', 'wsl'] as const)('%s automatic Studio executable discovery', (host) => {
   let fixture: string;
   let originalLocalAppData: string | undefined;
+  let originalAppData: string | undefined;
   let originalExe: string | undefined;
   const windowsStudioLauncher = jest.fn(() => { throw new Error('Reached native launch boundary'); });
 
@@ -64,8 +65,11 @@ describe.each(['windows', 'wsl'] as const)('%s automatic Studio executable disco
   beforeEach(() => {
     fixture = mkdtempSync(path.join(os.tmpdir(), 'studio-executable-discovery-'));
     originalLocalAppData = process.env.LOCALAPPDATA;
+    originalAppData = process.env.APPDATA;
     originalExe = process.env.ROBLOX_STUDIO_EXE;
     process.env.LOCALAPPDATA = fixture;
+    // Discovery also scans launcher trees under APPDATA; keep the host's out.
+    process.env.APPDATA = fixture;
     delete process.env.ROBLOX_STUDIO_EXE;
     Object.defineProperty(process, 'platform', { ...originalPlatformDescriptor, value: host === 'windows' ? 'win32' : 'linux' });
     jest.mocked(studioPlatform.getStudioPlatformCapabilities).mockReturnValue(studioPlatform.detectStudioPlatform({
@@ -90,6 +94,8 @@ describe.each(['windows', 'wsl'] as const)('%s automatic Studio executable disco
     Object.defineProperty(process, 'platform', originalPlatformDescriptor);
     if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
     else process.env.LOCALAPPDATA = originalLocalAppData;
+    if (originalAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = originalAppData;
     if (originalExe === undefined) delete process.env.ROBLOX_STUDIO_EXE;
     else process.env.ROBLOX_STUDIO_EXE = originalExe;
     rmSync(fixture, { recursive: true, force: true });
